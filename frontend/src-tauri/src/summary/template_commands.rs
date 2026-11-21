@@ -123,6 +123,55 @@ pub async fn api_validate_template<R: Runtime>(
     }
 }
 
+/// Editable source of a template for the settings editor
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TemplateSource {
+    pub id: String,
+    /// JSON currently in effect (the custom override if present, else the shipped template)
+    pub content: String,
+    /// True when a custom override is in effect
+    pub is_custom: bool,
+    /// Shipped JSON, used for "reset to default" (None for templates the user created)
+    pub default_content: Option<String>,
+}
+
+/// Returns the JSON in effect for a template plus its shipped default
+#[tauri::command]
+pub async fn api_get_template_source(template_id: String) -> Result<TemplateSource, String> {
+    let default_content = templates::default_template_source(&template_id);
+    let custom_content = templates::custom_template_source(&template_id);
+    let is_custom = custom_content.is_some();
+    let content = custom_content
+        .or_else(|| default_content.clone())
+        .ok_or_else(|| format!("Template '{}' not found", template_id))?;
+    Ok(TemplateSource {
+        id: template_id,
+        content,
+        is_custom,
+        default_content,
+    })
+}
+
+/// Validates and saves a custom override of a template (applies to the next summary)
+#[tauri::command]
+pub async fn api_save_custom_template(
+    template_id: String,
+    template_json: String,
+) -> Result<TemplateInfo, String> {
+    let template = templates::save_custom_template(&template_id, &template_json)?;
+    Ok(TemplateInfo {
+        id: template_id,
+        name: template.name,
+        description: template.description,
+    })
+}
+
+/// Removes the custom override so the shipped template is used again
+#[tauri::command]
+pub async fn api_reset_custom_template(template_id: String) -> Result<bool, String> {
+    templates::reset_custom_template(&template_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

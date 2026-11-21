@@ -117,6 +117,80 @@ pub fn get_template(template_id: &str) -> Result<Template, String> {
     validate_and_parse_template(&json_content)
 }
 
+/// Template ids map to file names; only allow simple names (no paths).
+fn is_valid_template_id(template_id: &str) -> bool {
+    !template_id.is_empty()
+        && template_id.len() <= 64
+        && template_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Raw JSON of the user's custom override for a template, if one exists.
+pub fn custom_template_source(template_id: &str) -> Option<String> {
+    if !is_valid_template_id(template_id) {
+        return None;
+    }
+    load_custom_template(template_id)
+}
+
+/// Raw JSON of the template as shipped (bundled resource, else built-in), ignoring overrides.
+pub fn default_template_source(template_id: &str) -> Option<String> {
+    if !is_valid_template_id(template_id) {
+        return None;
+    }
+    load_bundled_template(template_id)
+        .or_else(|| defaults::get_builtin_template(template_id).map(str::to_string))
+}
+
+/// Validate and save a custom override for a template in the user's templates directory.
+/// The override takes precedence over the bundled template (see `get_template`).
+/// Returns the parsed template so callers can report its name.
+pub fn save_custom_template(template_id: &str, json_content: &str) -> Result<Template, String> {
+    if !is_valid_template_id(template_id) {
+        return Err(format!("Invalid template id '{}'", template_id));
+    }
+    // Never write a file `get_template` cannot parse: a broken override breaks summaries.
+    let template = validate_and_parse_template(json_content)?;
+    let pretty = serde_json::to_string_pretty(&template)
+        .map_err(|e| format!("Failed to serialize template: {}", e))?;
+
+    let dir = get_custom_templates_dir()
+        .ok_or_else(|| "Could not determine the custom templates directory".to_string())?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create templates directory: {}", e))?;
+    let path = dir.join(format!("{}.json", template_id));
+    let temp_path = dir.join(format!(".{}.json.tmp", template_id));
+    std::fs::write(&temp_path, pretty)
+        .map_err(|e| format!("Failed to write template: {}", e))?;
+    std::fs::rename(&temp_path, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp_path);
+        format!("Failed to save template: {}", e)
+    })?;
+    info!("Saved custom template '{}' to {:?}", template_id, path);
+    Ok(template)
+}
+
+/// Remove the user's custom override so the shipped template is used again.
+/// Returns true if an override was removed.
+pub fn reset_custom_template(template_id: &str) -> Result<bool, String> {
+    if !is_valid_template_id(template_id) {
+        return Err(format!("Invalid template id '{}'", template_id));
+    }
+    let Some(dir) = get_custom_templates_dir() else {
+        return Ok(false);
+    };
+    let path = dir.join(format!("{}.json", template_id));
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            info!("Removed custom template override '{}'", template_id);
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("Failed to remove custom template: {}", e)),
+    }
+}
+
 /// Validate and parse template JSON
 ///
 /// # Arguments
@@ -235,6 +309,31 @@ mod tests {
     fn test_get_nonexistent_template() {
         let result = get_template("nonexistent_template");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn template_ids_cannot_escape_the_templates_directory() {
+        assert!(is_valid_template_id("standard_meeting"));
+        assert!(is_valid_template_id("sales-call_2"));
+        for bad in ["", "../standard_meeting", "a/b", "a\\b", "C:x", "name.json", "with space"] {
+            assert!(!is_valid_template_id(bad), "accepted {:?}", bad);
+        }
+        assert!(save_custom_template("../evil", "{}").is_err());
+        assert!(reset_custom_template("..\\evil").is_err());
+        assert!(custom_template_source("../evil").is_none());
+    }
+
+    #[test]
+    fn default_template_source_ignores_overrides_and_parses() {
+        let source = default_template_source("standard_meeting").expect("shipped template");
+        assert!(validate_and_parse_template(&source).is_ok());
+    }
+
+    #[test]
+    fn invalid_custom_template_is_rejected_before_writing() {
+        let err = save_custom_template("standard_meeting", r#"{"name":"x","description":"y","sections":[]}"#)
+            .unwrap_err();
+        assert!(err.contains("at least one section"), "{}", err);
     }
 
     #[test]

@@ -135,6 +135,22 @@ fn template_cache_fingerprint(template: &Template) -> String {
     stable_text_fingerprint(&rendered_template)
 }
 
+/// Template fingerprint extended with custom base instructions, so a translation-only
+/// regeneration never reuses an English summary produced under different instructions.
+/// Unchanged (default) instructions keep the plain template fingerprint, so existing
+/// caches stay valid.
+fn summary_cache_fingerprint(template: &Template, summary_instructions: &str) -> String {
+    let template_fingerprint = template_cache_fingerprint(template);
+    if summary_instructions == crate::summary::instructions::DEFAULT_SUMMARY_INSTRUCTIONS {
+        template_fingerprint
+    } else {
+        stable_text_fingerprint(&format!(
+            "{}\n---BASE-INSTRUCTIONS---\n{}",
+            template_fingerprint, summary_instructions
+        ))
+    }
+}
+
 fn normalise_summary_language_for_cache(summary_language: Option<&str>) -> Option<String> {
     language_name_from_code(summary_language?.trim()).map(str::to_string)
 }
@@ -503,7 +519,10 @@ impl SummaryService {
                 return;
             }
         };
-        let template_fingerprint = template_cache_fingerprint(&template);
+        // Read once so the cache key and the prompt use the same instructions
+        let summary_instructions = crate::summary::instructions::active_summary_instructions();
+        let template_fingerprint =
+            summary_cache_fingerprint(&template, &summary_instructions);
 
         let cache_source = build_summary_cache_source(
             &text,
@@ -557,6 +576,7 @@ impl SummaryService {
             &custom_prompt,
             &template_id,
             &template,
+            &summary_instructions,
             token_threshold,
             ollama_endpoint.as_deref(),
             custom_openai_endpoint.as_deref(),
@@ -828,6 +848,31 @@ mod tests {
             template_cache_fingerprint(&test_template("Summary")),
             template_cache_fingerprint(&test_template("Decisions"))
         );
+    }
+
+    #[test]
+    fn default_instructions_keep_the_existing_cache_fingerprint() {
+        let template = test_template("Summary");
+        assert_eq!(
+            summary_cache_fingerprint(
+                &template,
+                crate::summary::instructions::DEFAULT_SUMMARY_INSTRUCTIONS
+            ),
+            template_cache_fingerprint(&template)
+        );
+    }
+
+    #[test]
+    fn custom_instructions_change_the_cache_fingerprint() {
+        let template = test_template("Summary");
+        let default = summary_cache_fingerprint(
+            &template,
+            crate::summary::instructions::DEFAULT_SUMMARY_INSTRUCTIONS,
+        );
+        let brief = summary_cache_fingerprint(&template, "2. Be brief.");
+        let briefer = summary_cache_fingerprint(&template, "2. Be very brief.");
+        assert_ne!(default, brief);
+        assert_ne!(brief, briefer);
     }
 
     #[test]
