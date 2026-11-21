@@ -492,39 +492,16 @@ pub async fn api_process_transcript<R: Runtime>(
         if t.is_empty() { None } else { Some(t.to_string()) }
     });
 
-    // ponytail: summary starts are rare; use per-meeting locks only if start contention is measured.
-    let _start_guard = SUMMARY_START_LOCK.lock().await;
-    let started_at = next_summary_start(Utc::now());
-    SummaryProcessesRepository::create_or_reset_process(&pool, &m_id, started_at)
-        .await
-        .map_err(|e| format!("Failed to initialize process: {}", e))?;
-
-    let chunk_size = _chunk_size.unwrap_or(40000);
-    let overlap = _overlap.unwrap_or(1000);
-    if let Err(error) = TranscriptChunksRepository::save_transcript_data(
+    let (started_at, cancellation_token) = begin_summary_process(
         &pool,
         &m_id,
         &text,
         &model,
         &model_name,
-        chunk_size,
-        overlap,
+        _chunk_size.unwrap_or(40000),
+        _overlap.unwrap_or(1000),
     )
-    .await
-    {
-        let message = format!("Failed to save transcript data: {}", error);
-        let _ = SummaryProcessesRepository::update_process_failed(
-            &pool,
-            &m_id,
-            started_at,
-            &message,
-        )
-        .await;
-        return Err(message);
-    }
-
-    let cancellation_token =
-        SummaryService::register_cancellation_token(&m_id, started_at);
+    .await?;
     let meeting_id_clone = m_id.clone();
     tauri::async_runtime::spawn(async move {
         SummaryService::process_transcript_background(
@@ -546,8 +523,59 @@ pub async fn api_process_transcript<R: Runtime>(
     log_info!("🚀 Background task spawned for meeting_id: {}", &m_id);
     Ok(ProcessTranscriptResponse {
         message: "Summary generation started".to_string(),
-        process_id: started_at.to_rfc3339_opts(SecondsFormat::Nanos, true),
+        process_id: summary_process_id(started_at),
     })
+}
+
+/// Registers a new summary run for a meeting: resets its process row, stores the
+/// transcript input and registers the cancellation token. The caller then runs
+/// `SummaryService::process_transcript_background` with the returned values.
+/// The returned timestamp is also the run's process id (RFC 3339, nanoseconds).
+pub(crate) async fn begin_summary_process(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+    text: &str,
+    model: &str,
+    model_name: &str,
+    chunk_size: i32,
+    overlap: i32,
+) -> Result<(DateTime<Utc>, tokio_util::sync::CancellationToken), String> {
+    // ponytail: summary starts are rare; use per-meeting locks only if start contention is measured.
+    let _start_guard = SUMMARY_START_LOCK.lock().await;
+    let started_at = next_summary_start(Utc::now());
+    SummaryProcessesRepository::create_or_reset_process(pool, meeting_id, started_at)
+        .await
+        .map_err(|e| format!("Failed to initialize process: {}", e))?;
+
+    if let Err(error) = TranscriptChunksRepository::save_transcript_data(
+        pool,
+        meeting_id,
+        text,
+        model,
+        model_name,
+        chunk_size,
+        overlap,
+    )
+    .await
+    {
+        let message = format!("Failed to save transcript data: {}", error);
+        let _ = SummaryProcessesRepository::update_process_failed(
+            pool,
+            meeting_id,
+            started_at,
+            &message,
+        )
+        .await;
+        return Err(message);
+    }
+
+    let cancellation_token = SummaryService::register_cancellation_token(meeting_id, started_at);
+    Ok((started_at, cancellation_token))
+}
+
+/// Formats a summary process id the same way `api_process_transcript` returns it.
+pub(crate) fn summary_process_id(started_at: DateTime<Utc>) -> String {
+    started_at.to_rfc3339_opts(SecondsFormat::Nanos, true)
 }
 
 /// Cancels an ongoing summary generation process

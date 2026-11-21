@@ -16,6 +16,8 @@ export interface RecordingPreferences {
   file_format: string;
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
+  /** Record audio only; transcribe, summarize and notify after the recording stops. */
+  transcribe_after_recording: boolean;
 }
 
 interface RecordingSettingsProps {
@@ -29,7 +31,8 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     file_format: 'mp4',
     device_selection_version: [1, 1],
     preferred_mic_device: null,
-    preferred_system_device: null
+    preferred_system_device: null,
+    transcribe_after_recording: true
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -85,6 +88,15 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     await Analytics.track('auto_save_recording_toggled', {
       enabled: enabled.toString()
     });
+  };
+
+  const handleTranscribeAfterToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, transcribe_after_recording: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences);
+    if (isRecording) {
+      toast.info('Applies from your next recording');
+    }
   };
 
   const handleDeviceChange = async (devices: SelectedDevices) => {
@@ -172,6 +184,9 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     );
   }
 
+  // Post-recording transcription needs the audio file, so it always saves audio.
+  const savesAudio = preferences.auto_save || preferences.transcribe_after_recording;
+
   return (
     <div className="space-y-6">
       <div>
@@ -181,23 +196,42 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         </p>
       </div>
 
+      {/* Transcription timing */}
+      <div className="flex items-center justify-between p-4 border rounded-lg">
+        <div className="flex-1 pr-4">
+          <div className="font-medium">Transcribe After Recording</div>
+          <div className="text-sm text-gray-600">
+            Record audio only. When you stop, Meetily transcribes the full recording (more accurate than live
+            transcription), generates the summary and notifies you when the notes are ready. Turn off for live
+            transcription.
+          </div>
+        </div>
+        <Switch
+          checked={preferences.transcribe_after_recording}
+          onCheckedChange={handleTranscribeAfterToggle}
+          disabled={saving}
+        />
+      </div>
+
       {/* Auto Save Toggle */}
       <div className="flex items-center justify-between p-4 border rounded-lg">
         <div className="flex-1">
           <div className="font-medium">Save Audio Recordings</div>
           <div className="text-sm text-gray-600">
-            Automatically save audio files when recording stops
+            {preferences.transcribe_after_recording
+              ? 'Always on while Transcribe After Recording is enabled'
+              : 'Automatically save audio files when recording stops'}
           </div>
         </div>
         <Switch
-          checked={preferences.auto_save}
+          checked={savesAudio}
           onCheckedChange={handleAutoSaveToggle}
-          disabled={saving}
+          disabled={saving || preferences.transcribe_after_recording}
         />
       </div>
 
-      {/* Folder Location - Only shown when auto_save is enabled */}
-      {preferences.auto_save && (
+      {/* Folder Location - Only shown when audio is saved */}
+      {savesAudio && (
         <div className="space-y-4">
           <div className="p-4 border rounded-lg bg-gray-50">
             <div className="font-medium mb-2">Save Location</div>
@@ -225,7 +259,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       )}
 
       {/* Info when auto_save is disabled */}
-      {!preferences.auto_save && (
+      {!savesAudio && (
         <div className="p-4 border rounded-lg bg-yellow-50">
           <div className="text-sm text-yellow-800">
             Audio recording is disabled. Enable "Save Audio Recordings" to automatically save your meeting audio.

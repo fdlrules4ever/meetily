@@ -15,10 +15,12 @@ pub use parakeet_provider::ParakeetProvider;
 pub use engine::{
     TranscriptionEngine,
     validate_transcription_model_ready,
+    validate_transcription_model_downloaded,
     get_or_init_transcription_engine,
     get_or_init_whisper
 };
 pub use worker::{
+    start_discard_task,
     start_transcription_task,
     reset_speech_detected_flag,
     TranscriptUpdate

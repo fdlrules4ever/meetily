@@ -10,6 +10,9 @@ import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
+import { toast } from "sonner";
+import { usePostRecordingStatus } from "@/hooks/meeting-details/usePostRecordingStatus";
+import { PostRecordingBanner } from "@/components/MeetingDetails/PostRecordingBanner";
 
 interface MeetingDetailsResponse {
   id: string;
@@ -151,6 +154,37 @@ function MeetingDetailsContent() {
     }
   }, [transcriptError]);
 
+  // Re-read the summary process; a processing status makes the summary view poll it.
+  const refreshSummary = useCallback(async () => {
+    if (!meetingId || meetingId === 'intro-call') return;
+    try {
+      const response = await invoke<SummaryProcessResponse>('api_get_summary', { meetingId });
+      setSummaryResponse(response);
+      setMeetingSummary(response.status === 'idle' ? null : parseSummaryContent(response.data));
+    } catch (error) {
+      console.error('Failed to refresh meeting summary:', error);
+    }
+  }, [meetingId]);
+
+  // Post-recording pipeline: refresh the transcript and summary as each stage lands
+  const { status: postRecordingStatus, progress: postRecordingProgress } = usePostRecordingStatus(meetingId, {
+    onTranscriptReady: () => {
+      void refetch();
+    },
+    onSummaryStarted: () => {
+      void refreshSummary();
+    },
+    onFinished: (status, previousStage) => {
+      void refetch();
+      void refreshSummary();
+      void refetchMeetings();
+      // Summary failures are already reported by the summary view's polling.
+      if (status.stage === 'failed' && previousStage !== 'summarizing') {
+        toast.error(status.message, { description: status.error ?? undefined });
+      }
+    },
+  });
+
   // Extract fetchMeetingDetails for use in child components (now refetches via hook)
   const fetchMeetingDetails = useCallback(async () => {
     if (!meetingId || meetingId === 'intro-call') {
@@ -291,6 +325,9 @@ function MeetingDetailsContent() {
     totalCount={totalCount}
     loadedCount={loadedCount}
     onLoadMore={loadMore}
+    banner={postRecordingStatus
+      ? <PostRecordingBanner status={postRecordingStatus} progress={postRecordingProgress} />
+      : null}
   />;
 }
 

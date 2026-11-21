@@ -9,7 +9,8 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 
 /**
  * TranscriptPanel Component
@@ -36,6 +37,15 @@ export function TranscriptPanel({
   const { isRecording, isPaused } = useRecordingState();
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
   const isLinux = useIsLinux();
+
+  // Record-only sessions have no live transcript; tell the user what happens instead.
+  const [transcribeAfterRecording, setTranscribeAfterRecording] = useState(false);
+  useEffect(() => {
+    if (!isRecording) return;
+    invoke<{ transcribe_after_recording?: boolean }>('get_recording_preferences')
+      .then((prefs) => setTranscribeAfterRecording(prefs.transcribe_after_recording ?? false))
+      .catch((error) => console.warn('Failed to read recording preferences:', error));
+  }, [isRecording]);
 
   // Convert transcripts to segments for virtualized view
   const segments = useMemo(() =>
@@ -113,6 +123,7 @@ export function TranscriptPanel({
               isStopping={isStopping}
               enableStreaming={isRecording}
               showConfidence={true}
+              transcribeAfterRecording={transcribeAfterRecording}
             />
           </div>
         </div>

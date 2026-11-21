@@ -124,16 +124,69 @@ fn take_for_stop<'a, T>(
 /// Shared start-path finalize. Both start commands MUST call this so a new
 /// start path can't silently ship with a per-session flag left unreset (e.g.
 /// the mic-recovery budget already exhausted).
-fn finalize_recording_start() {
+fn finalize_recording_start(transcribe_after_recording: bool) {
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
+    SESSION_TRANSCRIBES_AFTER_RECORDING.store(transcribe_after_recording, Ordering::SeqCst);
     IS_RECORDING.store(true, Ordering::SeqCst);
     MIC_FALLBACK_FAILED_ATTEMPTS.store(0, Ordering::SeqCst); // fresh mic-recovery budget per session
     reset_speech_detected_flag(); // reset speech-detected emit latch for the new session
 }
 
+/// Startup model check. Live sessions load the model now (it transcribes while recording);
+/// sessions transcribed after the recording only confirm the model is downloaded, and the
+/// post-recording pipeline loads it once. Emits `transcription-error` on failure.
+async fn validate_model_for_session<R: Runtime>(
+    app: &AppHandle<R>,
+    transcribe_after_recording: bool,
+) -> Result<(), String> {
+    info!(
+        "🔍 Validating transcription model before starting recording (transcribe_after_recording={})...",
+        transcribe_after_recording
+    );
+    let result = if transcribe_after_recording {
+        transcription::validate_transcription_model_downloaded(app).await
+    } else {
+        transcription::validate_transcription_model_ready(app).await
+    };
+    if let Err(validation_error) = result {
+        error!("Model validation failed: {}", validation_error);
+
+        // Emit error event for frontend - actionable: false to show toast instead of modal
+        // (download progress is already shown in top-right toast)
+        let _ = app.emit("transcription-error", serde_json::json!({
+            "error": validation_error,
+            "userMessage": format!("Recording cannot start: {}", validation_error),
+            "actionable": false,
+            "phase": "startup"
+        }));
+
+        return Err(validation_error);
+    }
+    info!("✅ Transcription model validation passed");
+    Ok(())
+}
+
+/// Starts the consumer for the pipeline's speech chunks: the live transcription
+/// workers, or a drain when the saved audio is transcribed after the recording.
+fn start_chunk_consumer<R: Runtime>(
+    app: AppHandle<R>,
+    transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<super::AudioChunk>,
+    transcribe_after_recording: bool,
+) -> JoinHandle<()> {
+    if transcribe_after_recording {
+        transcription::start_discard_task(transcription_receiver)
+    } else {
+        transcription::start_transcription_task(app, transcription_receiver)
+    }
+}
+
 // Global recording manager and transcription task to keep them alive during recording
 static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+
+/// Whether the current/last session skips live transcription and is transcribed
+/// from the saved audio after it stops. Set by `finalize_recording_start`.
+static SESSION_TRANSCRIBES_AFTER_RECORDING: AtomicBool = AtomicBool::new(false);
 
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
@@ -456,46 +509,32 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         ));
     }
 
-    // Validate that transcription models are available before starting recording
-    info!("🔍 Validating transcription model availability before starting recording...");
-    if let Err(validation_error) = transcription::validate_transcription_model_ready(&app).await {
-        error!("Model validation failed: {}", validation_error);
-
-        // Emit error event for frontend - actionable: false to show toast instead of modal
-        // (download progress is already shown in top-right toast)
-        let _ = app.emit("transcription-error", serde_json::json!({
-            "error": validation_error,
-            "userMessage": format!("Recording cannot start: {}", validation_error),
-            "actionable": false,
-            "phase": "startup"
-        }));
-
-        return Err(validation_error);
-    }
-    info!("✅ Transcription model validation passed");
-
-    // Notify frontend that startup has begun (surfaces STARTING state)
-    app.emit("recording-starting", serde_json::json!({
-        "message": "Recording initialization started"
-    })).map_err(|e| e.to_string())?;
-
-    // Load recording preferences to get auto_save AND device preferences
-    let (auto_save, preferred_mic_name, preferred_system_name) =
+    // Load recording preferences (auto_save, devices, session mode) first:
+    // the startup model check depends on the session mode.
+    let (auto_save, transcribe_after_recording, preferred_mic_name, preferred_system_name) =
         match super::recording_preferences::load_recording_preferences(&app).await {
             Ok(prefs) => {
-                info!("📋 Loaded recording preferences: auto_save={}, preferred_mic={:?}, preferred_system={:?}",
-                      prefs.auto_save, prefs.preferred_mic_device, prefs.preferred_system_device);
+                info!("📋 Loaded recording preferences: auto_save={}, transcribe_after_recording={}, preferred_mic={:?}, preferred_system={:?}",
+                      prefs.auto_save, prefs.transcribe_after_recording, prefs.preferred_mic_device, prefs.preferred_system_device);
                 let (mic, system) = prefs.start_device_selection(
                     prefs.preferred_mic_device.clone(),
                     prefs.preferred_system_device.clone(),
                     cfg!(target_os = "linux"),
                 )?;
-                (prefs.auto_save, mic, system)
+                (prefs.effective_auto_save(), prefs.transcribe_after_recording, mic, system)
             }
             Err(e) => {
                 return Err(format!("Failed to load recording preferences: {}", e));
             }
         };
+
+    // Live sessions load the model now; post-recording sessions only check it is downloaded
+    validate_model_for_session(&app, transcribe_after_recording).await?;
+
+    // Notify frontend that startup has begun (surfaces STARTING state)
+    app.emit("recording-starting", serde_json::json!({
+        "message": "Recording initialization started"
+    })).map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "linux")]
     let (microphone_device, system_device) = resolve_linux_devices_for_start(&app, preferred_mic_name.as_deref(), preferred_system_name.as_deref()).await?;
@@ -583,11 +622,11 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Flip recording live + reset per-session flags (speech-detected latch,
     // mic-recovery budget). Shared with the other start path — see helper.
-    finalize_recording_start();
+    finalize_recording_start(transcribe_after_recording);
     drop(engine_lifecycle_guard);
 
     // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    let task_handle = start_chunk_consumer(app.clone(), transcription_receiver, transcribe_after_recording);
     {
         let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
         *global_task = Some(task_handle);
@@ -684,33 +723,21 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         ));
     }
 
-    // Validate that transcription models are available before starting recording
-    info!("🔍 Validating transcription model availability before starting recording...");
-    if let Err(validation_error) = transcription::validate_transcription_model_ready(&app).await {
-        error!("Model validation failed: {}", validation_error);
+    // Load recording preferences first: the startup model check depends on the session mode.
+    let prefs = super::recording_preferences::load_recording_preferences(&app).await
+        .map_err(|e| format!("Failed to load recording preferences: {}", e))?;
+    let transcribe_after_recording = prefs.transcribe_after_recording;
 
-        // Emit error event for frontend - actionable: false to show toast instead of modal
-        // (download progress is already shown in top-right toast)
-        let _ = app.emit("transcription-error", serde_json::json!({
-            "error": validation_error,
-            "userMessage": format!("Recording cannot start: {}", validation_error),
-            "actionable": false,
-            "phase": "startup"
-        }));
-
-        return Err(validation_error);
-    }
-    info!("✅ Transcription model validation passed");
+    // Live sessions load the model now; post-recording sessions only check it is downloaded
+    validate_model_for_session(&app, transcribe_after_recording).await?;
 
     // Notify frontend that startup has begun (surfaces STARTING state)
     app.emit("recording-starting", serde_json::json!({
         "message": "Recording initialization started"
     })).map_err(|e| e.to_string())?;
 
-    let prefs = super::recording_preferences::load_recording_preferences(&app).await
-        .map_err(|e| format!("Failed to load recording preferences: {}", e))?;
     let (mic_device_name, system_device_name) = super::recording_preferences::resolve_start_devices(&prefs, mic_device_name, system_device_name).await?;
-    let auto_save = prefs.auto_save;
+    let auto_save = prefs.effective_auto_save();
 
     #[cfg(target_os = "linux")]
     let (mic_device, system_device) = resolve_linux_devices_for_start(&app, mic_device_name.as_deref(), system_device_name.as_deref()).await?;
@@ -797,11 +824,11 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Flip recording live + reset per-session flags (speech-detected latch,
     // mic-recovery budget). Shared with the other start path — see helper.
-    finalize_recording_start();
+    finalize_recording_start(transcribe_after_recording);
     drop(engine_lifecycle_guard);
 
     // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    let task_handle = start_chunk_consumer(app.clone(), transcription_receiver, transcribe_after_recording);
     {
         let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
         *global_task = Some(task_handle);
@@ -1046,56 +1073,62 @@ async fn stop_recording_for_session<R: Runtime>(
         }
     };
 
-    match config.as_deref() {
-        Some("parakeet") => {
-            info!("🦜 Unloading Parakeet model...");
-            let engine_clone = {
-                let engine_guard = crate::parakeet_engine::commands::PARAKEET_ENGINE
-                    .lock()
-                    .unwrap();
-                engine_guard.as_ref().cloned()
-            };
+    // A post-recording transcription job (or manual retranscription) may be using the
+    // engine for an earlier meeting; it unloads the model itself when it finishes.
+    if super::retranscription::is_retranscription_in_progress() {
+        info!("Skipping model unload: a batch transcription job is using the engine");
+    } else {
+        match config.as_deref() {
+            Some("parakeet") => {
+                info!("🦜 Unloading Parakeet model...");
+                let engine_clone = {
+                    let engine_guard = crate::parakeet_engine::commands::PARAKEET_ENGINE
+                        .lock()
+                        .unwrap();
+                    engine_guard.as_ref().cloned()
+                };
 
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Parakeet model before unload: '{}'", current_model);
+                if let Some(engine) = engine_clone {
+                    let current_model = engine
+                        .get_current_model()
+                        .await
+                        .unwrap_or_else(|| "unknown".to_string());
+                    info!("Current Parakeet model before unload: '{}'", current_model);
 
-                if engine.unload_model().await {
-                    info!("✅ Parakeet model '{}' unloaded successfully", current_model);
+                    if engine.unload_model().await {
+                        info!("✅ Parakeet model '{}' unloaded successfully", current_model);
+                    } else {
+                        warn!("⚠️ Failed to unload Parakeet model '{}'", current_model);
+                    }
                 } else {
-                    warn!("⚠️ Failed to unload Parakeet model '{}'", current_model);
+                    warn!("⚠️ No Parakeet engine found to unload model");
                 }
-            } else {
-                warn!("⚠️ No Parakeet engine found to unload model");
             }
-        }
-        _ => {
-            // Default to Whisper
-            info!("🎤 Unloading Whisper model...");
-            let engine_clone = {
-                let engine_guard = crate::whisper_engine::commands::WHISPER_ENGINE
-                    .lock()
-                    .unwrap();
-                engine_guard.as_ref().cloned()
-            };
+            _ => {
+                // Default to Whisper
+                info!("🎤 Unloading Whisper model...");
+                let engine_clone = {
+                    let engine_guard = crate::whisper_engine::commands::WHISPER_ENGINE
+                        .lock()
+                        .unwrap();
+                    engine_guard.as_ref().cloned()
+                };
 
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Whisper model before unload: '{}'", current_model);
+                if let Some(engine) = engine_clone {
+                    let current_model = engine
+                        .get_current_model()
+                        .await
+                        .unwrap_or_else(|| "unknown".to_string());
+                    info!("Current Whisper model before unload: '{}'", current_model);
 
-                if engine.unload_model().await {
-                    info!("✅ Whisper model '{}' unloaded successfully", current_model);
+                    if engine.unload_model().await {
+                        info!("✅ Whisper model '{}' unloaded successfully", current_model);
+                    } else {
+                        warn!("⚠️ Failed to unload Whisper model '{}'", current_model);
+                    }
                 } else {
-                    warn!("⚠️ Failed to unload Whisper model '{}'", current_model);
+                    warn!("⚠️ No Whisper engine found to unload model");
                 }
-            } else {
-                warn!("⚠️ No Whisper engine found to unload model");
             }
         }
     }
@@ -1285,7 +1318,8 @@ async fn stop_recording_for_session<R: Runtime>(
         serde_json::json!({
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
-            "meeting_name": meeting_name_str
+            "meeting_name": meeting_name_str,
+            "transcribe_after_recording": SESSION_TRANSCRIBES_AFTER_RECORDING.load(Ordering::SeqCst)
         }),
     )
     .map_err(|e| e.to_string())?;

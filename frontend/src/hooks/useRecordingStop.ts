@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
@@ -86,10 +87,11 @@ export function useRecordingStop(
           message: string;
           folder_path?: string;
           meeting_name?: string;
+          transcribe_after_recording?: boolean;
         }>('recording-stopped', async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name } = event.payload;
+            const { folder_path, meeting_name, transcribe_after_recording } = event.payload;
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -98,6 +100,10 @@ export function useRecordingStop(
             if (meeting_name) {
               sessionStorage.setItem('last_recording_meeting_name', meeting_name);
             }
+            sessionStorage.setItem(
+              'last_recording_transcribe_after',
+              transcribe_after_recording ? 'true' : 'false'
+            );
           })();
 
         });
@@ -134,6 +140,9 @@ export function useRecordingStop(
     setIsRecording(false);
     setIsRecordingDisabled(true);
     const stopStartTime = Date.now();
+    // Sessions recorded in "transcribe after recording" mode have no live transcripts
+    // to wait for: the saved audio is transcribed by the post-recording pipeline.
+    const transcribeAfterRecording = sessionStorage.getItem('last_recording_transcribe_after') === 'true';
 
     try {
       console.log('Post-stop processing (new implementation)...', {
@@ -146,13 +155,16 @@ export function useRecordingStop(
       console.log('Recording already stopped by RecordingControls, processing transcription...');
 
       // Wait for transcription to complete
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Waiting for transcription...');
+      setStatus(
+        RecordingStatus.PROCESSING_TRANSCRIPTS,
+        transcribeAfterRecording ? 'Finishing recording...' : 'Waiting for transcription...'
+      );
       console.log('Waiting for transcription to complete...');
 
       const MAX_WAIT_TIME = 60000; // 60 seconds maximum wait (increased for longer processing)
       const POLL_INTERVAL = 500; // Check every 500ms
       let elapsedTime = 0;
-      let transcriptionComplete = false;
+      let transcriptionComplete = transcribeAfterRecording;
 
       // Listen for transcription-complete event
       const unlistenComplete = await listen('transcription-complete', () => {
@@ -201,7 +213,7 @@ export function useRecordingStop(
 
       if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
         console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
-      } else {
+      } else if (!transcribeAfterRecording) {
         console.log('✅ Transcription completed after', elapsedTime, 'ms');
         // Wait longer for any late transcript segments (increased from 1s to 4s)
         console.log('⏳ Waiting for late transcript segments...');
@@ -252,6 +264,11 @@ export function useRecordingStop(
           last_transcript: freshTranscripts.length > 0 ? freshTranscripts[freshTranscripts.length - 1].text.substring(0, 30) + '...' : 'none',
         });
 
+        if (transcribeAfterRecording && !folderPath) {
+          // Without the saved audio there is nothing to transcribe afterwards.
+          throw new Error('The recording audio was not saved, so it cannot be transcribed.');
+        }
+
         try {
           const responseData = await storageService.saveMeeting(
             savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
@@ -275,7 +292,8 @@ export function useRecordingStop(
             });
           }
 
-          if (shouldDetectSummaryLanguage) {
+          // Post-recording mode detects the language from the final transcript instead.
+          if (shouldDetectSummaryLanguage && !transcribeAfterRecording) {
             try {
               await detectAndCacheSummaryLanguage(
                 meetingId,
@@ -299,6 +317,7 @@ export function useRecordingStop(
           // Clean up session storage
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
+          sessionStorage.removeItem('last_recording_transcribe_after');
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
@@ -319,12 +338,28 @@ export function useRecordingStop(
             setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
           }
 
+          // Transcribe the saved audio, summarize and notify in the background
+          let postProcessingStarted = false;
+          if (transcribeAfterRecording && folderPath) {
+            try {
+              await invoke('start_post_recording_processing', { meetingId, folderPath });
+              postProcessingStarted = true;
+            } catch (error) {
+              console.error('Failed to start post-recording processing:', error);
+              toast.error('Could not start transcription', {
+                description: `${error instanceof Error ? error.message : String(error)} Use Retranscribe on the meeting page.`,
+              });
+            }
+          }
+
           // Mark as completed
           setStatus(RecordingStatus.COMPLETED);
 
           // Show success toast with navigation option
           toast.success('Recording saved successfully!', {
-            description: `${freshTranscripts.length} transcript segments saved.`,
+            description: postProcessingStarted
+              ? "Transcribing in the background. You'll get a notification when the notes are ready."
+              : `${freshTranscripts.length} transcript segments saved.`,
             action: {
               label: 'View Meeting',
               onClick: () => {
@@ -337,7 +372,8 @@ export function useRecordingStop(
 
           // Auto-navigate after a short delay with source parameter
           setTimeout(() => {
-            router.push(`/meeting-details?id=${meetingId}&source=recording`);
+            // The pipeline generates the summary itself, so the page must not auto-generate one.
+            router.push(`/meeting-details?id=${meetingId}&source=${postProcessingStarted ? 'post-recording' : 'recording'}`);
             clearTranscripts()
             Analytics.trackPageView('meeting_details');
 

@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { MeetingSummary, SummaryProcessResponse } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -34,6 +34,7 @@ export default function PageContent({
   totalCount,
   loadedCount,
   onLoadMore,
+  banner,
 }: {
   meeting: any;
   summaryData: MeetingSummary | null;
@@ -48,6 +49,8 @@ export default function PageContent({
   isLoadingMore?: boolean;
   totalCount?: number;
   loadedCount?: number;
+  /** Optional status bar above the split view (e.g. post-recording progress). */
+  banner?: ReactNode;
   onLoadMore?: () => void;
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
@@ -192,6 +195,7 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen min-w-0 bg-gray-50"
     >
+      {banner}
       <div className="flex flex-1 min-w-0 overflow-hidden">
         <MeetingDetailsSplitView
           activeTab={activeTab}

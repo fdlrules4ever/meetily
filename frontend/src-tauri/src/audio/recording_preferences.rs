@@ -30,6 +30,22 @@ pub struct RecordingPreferences {
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
+    /// Record audio only and transcribe the saved file after the recording stops,
+    /// then generate the summary and notify. Requires the audio file, so recordings
+    /// made in this mode always save audio regardless of `auto_save`.
+    #[serde(default = "default_transcribe_after_recording")]
+    pub transcribe_after_recording: bool,
+}
+
+fn default_transcribe_after_recording() -> bool {
+    true
+}
+
+impl RecordingPreferences {
+    /// Audio must be saved when transcription happens after the recording.
+    pub fn effective_auto_save(&self) -> bool {
+        self.auto_save || self.transcribe_after_recording
+    }
 }
 
 impl Default for RecordingPreferences {
@@ -45,6 +61,7 @@ impl Default for RecordingPreferences {
             preferred_system_device: None,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
+            transcribe_after_recording: default_transcribe_after_recording(),
         }
     }
 }

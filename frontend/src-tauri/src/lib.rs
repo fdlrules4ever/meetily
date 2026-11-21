@@ -945,6 +945,9 @@ pub fn run() {
             audio::retranscription::start_retranscription_command,
             audio::retranscription::cancel_retranscription_command,
             audio::retranscription::is_retranscription_in_progress_command,
+            // Post-recording pipeline commands
+            audio::post_recording::start_post_recording_processing,
+            audio::post_recording::get_post_recording_status,
             // Import audio commands
             audio::import::select_and_validate_audio_command,
             audio::import::validate_audio_file_command,

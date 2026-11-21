@@ -27,6 +27,8 @@ export interface VirtualizedTranscriptViewProps {
     showConfidence?: boolean;
     /** Completely disable auto-scroll behavior (for meeting details page) */
     disableAutoScroll?: boolean;
+    /** Recording without live transcription; the transcript is generated after it stops */
+    transcribeAfterRecording?: boolean;
 
     // Pagination props (infinite scroll)
     hasMore?: boolean;
@@ -119,6 +121,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     enableStreaming = false,
     showConfidence = true,
     disableAutoScroll = false,
+    transcribeAfterRecording = false,
     hasMore = false,
     isLoadingMore = false,
     totalCount = 0,
@@ -249,10 +252,16 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                 <div className={`w-3 h-3 rounded-full ${isPaused ? 'bg-orange-500' : 'bg-blue-500 animate-pulse'}`}></div>
                             </div>
                             <p className="text-sm text-gray-600">
-                                {isPaused ? 'Recording paused' : 'Listening for speech...'}
+                                {isPaused
+                                    ? 'Recording paused'
+                                    : transcribeAfterRecording ? 'Recording audio...' : 'Listening for speech...'}
                             </p>
                             <p className="text-xs mt-1 text-gray-400">
-                                {isPaused ? 'Click resume to continue recording' : 'Speak to see live transcription'}
+                                {isPaused
+                                    ? 'Click resume to continue recording'
+                                    : transcribeAfterRecording
+                                        ? 'The transcript and summary are generated after you stop'
+                                        : 'Speak to see live transcription'}
                             </p>
                         </>
                     ) : (

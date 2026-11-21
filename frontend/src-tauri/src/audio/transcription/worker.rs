@@ -177,6 +177,24 @@ pub struct TranscriptUpdate {
 // NOTE: get_transcript_history and get_recording_meeting_name functions
 // have been moved to recording_commands.rs where they have access to RECORDING_MANAGER
 
+/// Consumer for sessions that transcribe the saved recording after it stops.
+///
+/// The pipeline still produces VAD speech chunks; draining them keeps the channel
+/// contract (and the stop-time flush) identical to live mode while no engine runs.
+/// The recording output path is unaffected.
+pub fn start_discard_task(
+    mut transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioChunk>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        info!("Live transcription disabled for this session; speech chunks will be transcribed after recording");
+        let mut drained: u64 = 0;
+        while transcription_receiver.recv().await.is_some() {
+            drained += 1;
+        }
+        info!("Recording chunk drain finished; chunks_skipped={}", drained);
+    })
+}
+
 /// Optimized parallel transcription task ensuring ZERO chunk loss
 pub fn start_transcription_task<R: Runtime>(
     app: AppHandle<R>,

@@ -145,6 +145,98 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
     }
 }
 
+/// Check, without loading it, that the speech model used after the recording is downloaded.
+///
+/// For "transcribe after recording" sessions nothing is transcribed while recording, so the
+/// model is not loaded at start (live mode's `validate_transcription_model_ready` loads it).
+/// This mirrors the model the post-recording (retranscription) path will load: the configured
+/// model, or the provider default when none is configured. Unlike live validation there is no
+/// fallback to another downloaded model, because the batch path has none either.
+pub async fn validate_transcription_model_downloaded<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<(), String> {
+    let (provider, configured_model) = match crate::api::api::api_get_transcript_config(
+        app.clone(),
+        app.clone().state(),
+        None,
+    )
+    .await
+    {
+        Ok(Some(config)) => (config.provider, config.model),
+        Ok(None) => ("parakeet".to_string(), String::new()),
+        Err(e) => {
+            warn!("⚠️ Failed to get transcript config: {}, defaulting to parakeet", e);
+            ("parakeet".to_string(), String::new())
+        }
+    };
+    let pick = |default: &str| {
+        if configured_model.is_empty() {
+            default.to_string()
+        } else {
+            configured_model.clone()
+        }
+    };
+
+    let (model, downloaded) = match provider.as_str() {
+        "localWhisper" => {
+            crate::whisper_engine::commands::whisper_init()
+                .await
+                .map_err(|e| format!("Failed to initialize speech recognition: {}", e))?;
+            let engine = crate::whisper_engine::commands::WHISPER_ENGINE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| "Whisper engine not initialized".to_string())?;
+            let model = pick(crate::config::DEFAULT_WHISPER_MODEL);
+            let models = engine
+                .discover_models()
+                .await
+                .map_err(|e| format!("Failed to discover models: {}", e))?;
+            let downloaded = models.iter().any(|m| {
+                m.name == model && matches!(m.status, crate::whisper_engine::ModelStatus::Available)
+            });
+            (model, downloaded)
+        }
+        "parakeet" => {
+            crate::parakeet_engine::commands::parakeet_init()
+                .await
+                .map_err(|e| format!("Failed to initialize Parakeet speech recognition: {}", e))?;
+            let engine = crate::parakeet_engine::commands::PARAKEET_ENGINE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| "Parakeet engine not initialized".to_string())?;
+            let model = pick(crate::config::DEFAULT_PARAKEET_MODEL);
+            let models = engine
+                .discover_models()
+                .await
+                .map_err(|e| format!("Failed to discover Parakeet models: {}", e))?;
+            let downloaded = models.iter().any(|m| {
+                m.name == model && matches!(m.status, crate::parakeet_engine::ModelStatus::Available)
+            });
+            (model, downloaded)
+        }
+        other => {
+            return Err(format!(
+                "Provider '{}' is not supported for local transcription. Please select 'localWhisper' or 'parakeet'.",
+                other
+            ));
+        }
+    };
+
+    if downloaded {
+        info!("✅ Speech model '{}' is downloaded; it will be loaded after the recording", model);
+        Ok(())
+    } else {
+        Err(format!(
+            "The speech model '{}' is not downloaded. Download it in Settings → Transcription before recording.",
+            model
+        ))
+    }
+}
+
 /// Get or initialize the appropriate transcription engine based on provider configuration
 pub async fn get_or_init_transcription_engine<R: Runtime>(
     app: &AppHandle<R>,
