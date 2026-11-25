@@ -1153,8 +1153,10 @@ impl AudioPipeline {
         let mixed_with_gain = mixed_clean;
 
         // STEP 3: Send mixed audio for transcription (VAD + Whisper)
+        let mut heard_speech = false;
         match self.vad_processor.process_audio(&mixed_with_gain) {
             Ok(speech_segments) => {
+                heard_speech = !speech_segments.is_empty();
                 for segment in speech_segments {
                     let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
                     if segment.samples.len() >= 800 {
@@ -1177,6 +1179,10 @@ impl AudioPipeline {
                 }
             }
             Err(error) => self.log_stats.record_vad_failure(VadOperation::Process, &error),
+        }
+        // Speech on either side (mic or call) resets the silence reminder.
+        if heard_speech || self.vad_processor.is_in_speech() {
+            super::silence_reminder::mark_speech();
         }
 
         // STEP 4: Send mixed audio for recording (WAV file)

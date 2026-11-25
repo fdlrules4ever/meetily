@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { FolderOpen } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
@@ -18,7 +19,19 @@ export interface RecordingPreferences {
   preferred_system_device: string | null;
   /** Record audio only; transcribe, summarize and notify after the recording stops. */
   transcribe_after_recording: boolean;
+  /** Notify when nobody has spoken for this many minutes while recording; 0 = off. */
+  silence_reminder_minutes: number;
 }
+
+const SILENCE_REMINDER_OPTIONS = [
+  { value: 0, label: 'Off' },
+  { value: 1, label: 'After 1 minute' },
+  { value: 2, label: 'After 2 minutes' },
+  { value: 5, label: 'After 5 minutes' },
+  { value: 10, label: 'After 10 minutes' },
+  { value: 15, label: 'After 15 minutes' },
+  { value: 30, label: 'After 30 minutes' },
+];
 
 interface RecordingSettingsProps {
   onSave?: (preferences: RecordingPreferences) => void;
@@ -32,7 +45,8 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     device_selection_version: [1, 1],
     preferred_mic_device: null,
     preferred_system_device: null,
-    transcribe_after_recording: true
+    transcribe_after_recording: true,
+    silence_reminder_minutes: 1
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -92,6 +106,15 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
   const handleTranscribeAfterToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, transcribe_after_recording: enabled };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences);
+    if (isRecording) {
+      toast.info('Applies from your next recording');
+    }
+  };
+
+  const handleSilenceReminderChange = async (value: string) => {
+    const newPreferences = { ...preferences, silence_reminder_minutes: Number(value) };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
     if (isRecording) {
@@ -211,6 +234,33 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           onCheckedChange={handleTranscribeAfterToggle}
           disabled={saving}
         />
+      </div>
+
+      {/* Silence reminder */}
+      <div className="flex items-center justify-between p-4 border rounded-lg">
+        <div className="flex-1 pr-4">
+          <div className="font-medium">Still Recording Reminder</div>
+          <div className="text-sm text-gray-600">
+            Notify you when nobody has spoken (microphone or call audio) for a while during a recording, so a
+            recording you forgot to stop doesn't keep running. Repeats every 10 minutes while it stays quiet.
+          </div>
+        </div>
+        <Select
+          value={String(preferences.silence_reminder_minutes ?? 1)}
+          onValueChange={handleSilenceReminderChange}
+          disabled={saving}
+        >
+          <SelectTrigger className="w-44" aria-label="Still recording reminder">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SILENCE_REMINDER_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={String(option.value)}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Auto Save Toggle */}

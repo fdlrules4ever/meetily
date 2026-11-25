@@ -35,10 +35,18 @@ pub struct RecordingPreferences {
     /// made in this mode always save audio regardless of `auto_save`.
     #[serde(default = "default_transcribe_after_recording")]
     pub transcribe_after_recording: bool,
+    /// Notify when no speech was detected for this many minutes while recording
+    /// (0 = off). See `audio::silence_reminder`.
+    #[serde(default = "default_silence_reminder_minutes")]
+    pub silence_reminder_minutes: u32,
 }
 
 fn default_transcribe_after_recording() -> bool {
     true
+}
+
+fn default_silence_reminder_minutes() -> u32 {
+    1
 }
 
 impl RecordingPreferences {
@@ -62,6 +70,7 @@ impl Default for RecordingPreferences {
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
             transcribe_after_recording: default_transcribe_after_recording(),
+            silence_reminder_minutes: default_silence_reminder_minutes(),
         }
     }
 }

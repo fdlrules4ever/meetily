@@ -674,6 +674,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Update tray menu to reflect recording state
     crate::tray::update_tray_menu(&app);
+    // Tray tooltip timer + "still recording?" notification after a quiet stretch
+    super::silence_reminder::start(&app);
 
     info!("✅ Recording started successfully with async-first approach");
 
@@ -879,6 +881,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Update tray menu to reflect recording state
     crate::tray::update_tray_menu(&app);
+    // Tray tooltip timer + "still recording?" notification after a quiet stretch
+    super::silence_reminder::start(&app);
 
     info!("✅ Recording started with custom devices using async-first approach");
 
@@ -1411,6 +1415,12 @@ pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
     } else {
         Err("No recording manager found".to_string())
     }
+}
+
+/// Recording time so far in seconds, excluding pauses (None when not recording).
+pub fn active_recording_seconds() -> Option<f64> {
+    let manager_guard = RECORDING_MANAGER.lock().unwrap_or_else(|e| e.into_inner());
+    manager_guard.as_ref().and_then(|manager| manager.get_active_recording_duration())
 }
 
 /// Check if recording is currently paused

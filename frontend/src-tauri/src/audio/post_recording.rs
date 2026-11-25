@@ -409,7 +409,7 @@ async fn fail<R: Runtime>(app: &AppHandle<R>, meeting_id: &str, title: &str, err
 
 /// Shows a notification through the manager (respects the user's notification
 /// settings), falling back to a direct system notification before it is ready.
-async fn notify<R: Runtime>(app: &AppHandle<R>, notification: Notification) {
+pub(crate) async fn notify<R: Runtime>(app: &AppHandle<R>, notification: Notification) {
     if let Some(state) = app.try_state::<NotificationManagerState<R>>() {
         let guard = state.read().await;
         if let Some(manager) = guard.as_ref() {

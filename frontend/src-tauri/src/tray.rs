@@ -301,6 +301,16 @@ pub async fn update_tray_menu_async<R: Runtime>(app: &AppHandle<R>) {
     let recording_state = get_current_recording_state().await;
     log::info!("Tray: Current recording state: {:?}", recording_state);
 
+    // Red dot on the tray icon / taskbar / Dock while recording, orange while paused.
+    crate::recording_indicator::apply(
+        app,
+        match recording_state {
+            RecordingState::Recording => crate::recording_indicator::Indicator::Recording,
+            RecordingState::Paused => crate::recording_indicator::Indicator::Paused,
+            _ => crate::recording_indicator::Indicator::Off,
+        },
+    );
+
     // Determine if recording should be allowed
     // Only block recording during incomplete onboarding when no transcription model is ready
     let can_record = check_can_record(app).await;

@@ -31,6 +31,15 @@ Fork of [Zackriya-Solutions/meetily](https://github.com/Zackriya-Solutions/meeti
   - Recording: `pipeline.rs` (`track_sender`), `recording_saver.rs` (`start_track_accumulation`),
     `incremental_saver.rs` (`new_track`). Transcription: `retranscription.rs`, `speaker_tracks.rs`.
     UI: `VirtualizedTranscriptView.tsx`, `lib/speaker.ts`.
+- **"Still recording?" reminder.** Recording Settings → "Still Recording Reminder" (default: after 1 minute,
+  options off to 30 minutes). The pipeline's VAD on the mixed microphone + call audio marks every moment it
+  hears speech; a watcher started with each recording shows a notification once nobody has spoken for that long,
+  then every 10 minutes while it stays quiet. Speech (not loudness) resets it; paused time doesn't count. The
+  setting is read when a recording starts. `audio/silence_reminder.rs`, hook in `pipeline.rs` (`mark_speech`).
+- **Recording indicator.** While recording: red dot on the tray icon (orange when paused) with the recording
+  time in its tooltip, red dot on the taskbar button (Windows overlay icon) and a Dock badge (macOS, untested).
+  The tray icon matters most, because closing the window hides it to the tray. `recording_indicator.rs`, applied
+  from `tray::update_tray_menu_async`.
 - **Whisper thread count:** upstream computes a thread count per machine but never passes it to
   whisper.cpp, which then uses its default of 4. `whisper_engine.rs` now calls `set_n_threads`.
 - **Welcome screen:** says the transcript is made after recording, and why (only while "Transcribe After

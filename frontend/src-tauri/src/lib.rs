@@ -51,6 +51,7 @@ pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod recording_indicator;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -718,6 +719,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Showing the window from the tray recreates its taskbar button without the
+            // recording overlay; put it back.
+            if let (tauri::WindowEvent::Focused(true), "main") = (event, window.label()) {
+                if let Some(webview_window) = window.app_handle().get_webview_window("main") {
+                    recording_indicator::refresh_window(&webview_window);
+                }
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();

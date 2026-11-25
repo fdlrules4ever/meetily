@@ -161,6 +161,11 @@ impl ContinuousVadProcessor {
         Ok(resampled)
     }
 
+    /// True while a speech segment is open (speech started, not yet ended).
+    pub fn is_in_speech(&self) -> bool {
+        self.in_speech
+    }
+
     /// Flush any remaining audio and return final speech segments
     pub fn flush(&mut self) -> Result<Vec<SpeechSegment>> {
         debug!("VAD flush: in_speech={}, current_speech_len={}, buffer_len={}, speech_segments_queued={}",
