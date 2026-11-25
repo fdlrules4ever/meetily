@@ -21,6 +21,17 @@ pub fn encode_single_audio(
     channels: u16,
     output_path: &PathBuf,
 ) -> anyhow::Result<()> {
+    // 192k (raised from 64k) for better audio quality, especially for speech
+    encode_single_audio_with_bitrate(data, sample_rate, channels, output_path, "192k")
+}
+
+pub fn encode_single_audio_with_bitrate(
+    data: &[u8],
+    sample_rate: u32,
+    channels: u16,
+    output_path: &PathBuf,
+    bitrate: &str,
+) -> anyhow::Result<()> {
     debug!("Starting FFmpeg process for {} bytes of audio data", data.len());
 
     if data.is_empty() {
@@ -47,7 +58,7 @@ pub fn encode_single_audio(
             "-c:a",
             "aac",
             "-b:a",
-            "192k", // Increased from 64k for better audio quality (especially for speech)
+            bitrate,
             "-profile:a",
             "aac_low", // Use AAC-LC profile for better compatibility
             "-movflags",

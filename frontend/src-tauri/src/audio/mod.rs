@@ -49,6 +49,9 @@ pub mod retranscription;
 // Post-recording pipeline (transcribe saved audio, summarize, notify)
 pub mod post_recording;
 
+// Separate mic/system tracks for "Me" / "Others" transcript labels
+pub mod speaker_tracks;
+
 // Import module (import external audio files as new meetings)
 pub mod import;
 

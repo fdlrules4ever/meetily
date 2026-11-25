@@ -225,17 +225,25 @@ impl RecordingManager {
     /// * `microphone_device` - Optional microphone device to use
     /// * `system_device` - Optional system audio device to use
     /// * `auto_save` - Whether to save audio checkpoints (true) or just transcripts/metadata (false)
+    /// * `save_speaker_tracks` - Also save unmixed mic/system tracks (needs `auto_save`)
     pub(crate) async fn start_recording(
         &mut self,
         microphone_device: Option<Arc<AudioDevice>>,
         system_device: Option<Arc<AudioDevice>>,
         auto_save: bool,
+        save_speaker_tracks: bool,
     ) -> std::result::Result<mpsc::UnboundedReceiver<AudioChunk>, RecordingStartError> {
-        info!("Starting recording manager (auto_save: {})", auto_save);
+        info!("Starting recording manager (auto_save: {}, speaker tracks: {})", auto_save, save_speaker_tracks);
 
         // Set up transcription channel
         let (transcription_sender, transcription_receiver) = mpsc::unbounded_channel::<AudioChunk>();
         let (recording_sender, recording_receiver) = mpsc::unbounded_channel::<AudioChunk>();
+        let (track_sender, track_receiver) = if auto_save && save_speaker_tracks {
+            let (sender, receiver) = mpsc::unbounded_channel::<AudioChunk>();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
 
         // Start recording state first
         self.state.start_recording()?;
@@ -267,6 +275,7 @@ impl RecordingManager {
             0, // Ignored - using dynamic sizing internally
             48000, // 48kHz sample rate
             Some(recording_sender), // CRITICAL: Pass recording sender to receive pre-mixed audio
+            track_sender,
             mic_name,
             mic_kind,
             sys_name,
@@ -277,6 +286,9 @@ impl RecordingManager {
         }
 
         self.recording_saver.start_accumulation(auto_save, recording_receiver);
+        if let Some(receiver) = track_receiver {
+            self.recording_saver.start_track_accumulation(receiver);
+        }
         self.recording_saver.set_device_info(
             microphone_device.as_ref().map(|d| d.name.clone()),
             system_device.as_ref().map(|d| d.name.clone())

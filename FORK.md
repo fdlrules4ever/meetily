@@ -21,6 +21,16 @@ Fork of [Zackriya-Solutions/meetily](https://github.com/Zackriya-Solutions/meeti
   (`summary/templates/loader.rs`, `summary/instructions.rs`, `components/SummaryPromptSettings.tsx`).
 - **Updates:** no automatic update check at startup and no updater artifacts. Upstream updates would
   replace this build. Check manually from About if needed.
+- **"You" / "Others" speaker labels.** In record-only mode the unmixed microphone and system audio are
+  also saved as `tracks/mic.mp4` and `tracks/system.mp4` (64 kbit/s, next to the mixed `audio.mp4`, which
+  is unchanged and still used for playback). Retranscription transcribes the two tracks separately and
+  stores `mic` / `system` in the existing `transcripts.speaker` column. Microphone lines that repeat the
+  call audio at the same moment (laptop speakers instead of a headset) are dropped. Without any call
+  audio (in-person meeting) lines stay unlabelled. The summary model receives "Me:" / "Others:" prefixes.
+  Older recordings and imports have no tracks and are transcribed from the mixed file as before.
+  - Recording: `pipeline.rs` (`track_sender`), `recording_saver.rs` (`start_track_accumulation`),
+    `incremental_saver.rs` (`new_track`). Transcription: `retranscription.rs`, `speaker_tracks.rs`.
+    UI: `VirtualizedTranscriptView.tsx`, `lib/speaker.ts`.
 - **Whisper thread count:** upstream computes a thread count per machine but never passes it to
   whisper.cpp, which then uses its default of 4. `whisper_engine.rs` now calls `set_n_threads`.
 - **Welcome screen:** says the transcript is made after recording, and why (only while "Transcribe After

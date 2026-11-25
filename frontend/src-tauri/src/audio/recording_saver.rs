@@ -7,9 +7,17 @@ use tokio::sync::mpsc;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 
-use super::recording_state::AudioChunk;
+use super::recording_state::{AudioChunk, DeviceType};
 use super::audio_processing::create_meeting_folder;
 use super::incremental_saver::IncrementalAudioSaver;
+use super::speaker_tracks::{self, SpeakerSide};
+
+/// Savers for the unmixed microphone and system-audio tracks.
+#[derive(Clone)]
+struct TrackSavers {
+    mic: Arc<AsyncMutex<IncrementalAudioSaver>>,
+    system: Arc<AsyncMutex<IncrementalAudioSaver>>,
+}
 
 /// Structured transcript segment for JSON export
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +57,7 @@ pub struct DeviceInfo {
 /// New recording saver using incremental saving strategy
 pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
+    track_savers: Option<TrackSavers>,
     meeting_folder: Option<PathBuf>,
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
@@ -60,6 +69,7 @@ impl RecordingSaver {
     pub fn new() -> Self {
         Self {
             incremental_saver: None,
+            track_savers: None,
             meeting_folder: None,
             meeting_name: None,
             metadata: None,
@@ -214,6 +224,66 @@ impl RecordingSaver {
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = true;
         }
+    }
+
+    /// Also save the unmixed microphone and system audio as `tracks/mic.mp4` and
+    /// `tracks/system.mp4`, so the transcript can be labelled "Me" / "Others" later.
+    /// Call after `start_accumulation`. Only active when audio is saved; failing to set
+    /// up the tracks never stops the recording itself.
+    pub fn start_track_accumulation(&mut self, mut receiver: mpsc::UnboundedReceiver<AudioChunk>) {
+        let Some(folder) = self.meeting_folder.clone() else { return };
+        if self.incremental_saver.is_none() {
+            return;
+        }
+
+        let savers = match (
+            IncrementalAudioSaver::new_track(folder.clone(), 48000, SpeakerSide::Mic),
+            IncrementalAudioSaver::new_track(folder, 48000, SpeakerSide::System),
+        ) {
+            (Ok(mic), Ok(system)) => TrackSavers {
+                mic: Arc::new(AsyncMutex::new(mic)),
+                system: Arc::new(AsyncMutex::new(system)),
+            },
+            _ => {
+                warn!("Could not set up separate speaker tracks; recording continues without them");
+                return;
+            }
+        };
+        self.track_savers = Some(savers.clone());
+
+        let is_saving = self.is_saving.clone();
+        tokio::spawn(async move {
+            while let Some(chunk) = receiver.recv().await {
+                if !is_saving.lock().map(|s| *s).unwrap_or(false) {
+                    break;
+                }
+                let saver = match chunk.device_type {
+                    DeviceType::Microphone => &savers.mic,
+                    DeviceType::System => &savers.system,
+                };
+                if saver.lock().await.add_chunk(chunk).is_err() {
+                    error!("Failed to add chunk to speaker track saver");
+                }
+            }
+        });
+        info!("Saving separate microphone and system audio tracks");
+    }
+
+    /// Merge the speaker tracks. On any failure both tracks are removed, so
+    /// retranscription falls back to the mixed recording instead of a partial pair.
+    async fn finalize_tracks(&mut self) {
+        let (Some(tracks), Some(folder)) = (self.track_savers.take(), self.meeting_folder.clone()) else {
+            return;
+        };
+        let mic = tracks.mic.lock().await.finalize().await;
+        let system = tracks.system.lock().await.finalize().await;
+        if let Err(e) = mic.and(system) {
+            warn!("Speaker tracks not saved, transcript will not be labelled by speaker: {}", e);
+            let _ = std::fs::remove_dir_all(folder.join(speaker_tracks::TRACKS_DIR));
+        } else {
+            info!("Saved separate microphone and system audio tracks");
+        }
+        let _ = std::fs::remove_dir_all(speaker_tracks::track_checkpoints_root(&folder));
     }
 
     /// Initialize meeting folder structure and metadata
@@ -389,6 +459,8 @@ impl RecordingSaver {
             error!("No incremental saver initialized - cannot save recording");
             return Err("No incremental saver initialized".to_string());
         };
+
+        self.finalize_tracks().await;
 
         // Save final transcripts.json with validation
         if let Some(folder) = &self.meeting_folder {

@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use anyhow::{Result, anyhow};
 use log::{info, warn, error};
-use super::encode::encode_single_audio;
+use super::encode::encode_single_audio_with_bitrate;
 use super::recording_state::AudioChunk;
+use super::speaker_tracks::{self, SpeakerSide};
 use serde::{Serialize, Deserialize};
 
 use super::ffmpeg::find_ffmpeg_path;
@@ -23,9 +24,31 @@ pub struct IncrementalAudioSaver {
     checkpoints_dir: PathBuf,
     meeting_folder: PathBuf,
     sample_rate: u32,
+    output_path: PathBuf,
+    bitrate: &'static str,
 }
 
 impl IncrementalAudioSaver {
+    /// Create a saver for one speaker side (`tracks/mic.mp4` or `tracks/system.mp4`).
+    /// Its checkpoints live outside `.checkpoints/`, so crash recovery of the mixed
+    /// recording never picks them up.
+    pub fn new_track(meeting_folder: PathBuf, sample_rate: u32, side: SpeakerSide) -> Result<Self> {
+        let checkpoints_dir = speaker_tracks::track_checkpoints_dir(&meeting_folder, side);
+        std::fs::create_dir_all(&checkpoints_dir)?;
+
+        Ok(Self {
+            checkpoint_buffer: Vec::new(),
+            checkpoint_interval_samples: sample_rate as usize * 30,
+            checkpoint_count: 0,
+            checkpoints_dir,
+            output_path: speaker_tracks::track_path(&meeting_folder, side),
+            meeting_folder,
+            sample_rate,
+            // Only used for transcription, so a lower bitrate keeps the extra files small
+            bitrate: "64k",
+        })
+    }
+
     /// Create a new incremental saver
     ///
     /// # Arguments
@@ -44,8 +67,10 @@ impl IncrementalAudioSaver {
             checkpoint_interval_samples: sample_rate as usize * 30, // 30 seconds
             checkpoint_count: 0,
             checkpoints_dir,
+            output_path: meeting_folder.join("audio.mp4"),
             meeting_folder,
             sample_rate,
+            bitrate: "192k",
         })
     }
 
@@ -93,11 +118,12 @@ impl IncrementalAudioSaver {
             .join(format!("audio_chunk_{:03}.mp4", self.checkpoint_count));
 
         // Encode and save checkpoint
-        encode_single_audio(
+        encode_single_audio_with_bitrate(
             bytemuck::cast_slice(&audio_data),
             self.sample_rate,
             1,  // mono
-            &checkpoint_path
+            &checkpoint_path,
+            self.bitrate,
         )?;
 
         let duration_seconds = audio_data.len() as f32 / self.sample_rate as f32;
@@ -129,7 +155,10 @@ impl IncrementalAudioSaver {
         }
 
         // Merge all checkpoints using FFmpeg concat
-        let final_audio_path = self.meeting_folder.join("audio.mp4");
+        let final_audio_path = self.output_path.clone();
+        if let Some(parent) = final_audio_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         self.merge_checkpoints(&final_audio_path).await?;
 
         // Clean up checkpoints directory

@@ -988,6 +988,20 @@ pub struct AudioPipeline {
     mixer: ProfessionalAudioMixer,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
+    // Optional unmixed copy of the same windows (one Microphone and one System chunk per
+    // window, equal length) so the recording can be transcribed per speaker side later.
+    track_sender: Option<mpsc::UnboundedSender<AudioChunk>>,
+}
+
+/// Pads the mic and system windows to the same length, matching what `mix_window` mixes,
+/// so the separate tracks stay sample-aligned with each other and with the mixed recording.
+fn aligned_track_windows(mic_window: &[f32], sys_window: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let len = mic_window.len().max(sys_window.len());
+    let mut mic = mic_window.to_vec();
+    let mut system = sys_window.to_vec();
+    mic.resize(len, 0.0);
+    system.resize(len, 0.0);
+    (mic, system)
 }
 
 impl AudioPipeline {
@@ -1063,6 +1077,7 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             recording_sender_for_mixed: None,  // Will be set by manager
+            track_sender: None,  // Set by manager when separate tracks are recorded
         })
     }
 
@@ -1175,6 +1190,20 @@ impl AudioPipeline {
             };
             let _ = sender.send(recording_chunk);
         }
+
+        // STEP 5: Send the unmixed windows for the per-speaker tracks
+        if let Some(ref sender) = self.track_sender {
+            let (mic, system) = aligned_track_windows(mic_window, sys_window);
+            for (data, device_type) in [(mic, DeviceType::Microphone), (system, DeviceType::System)] {
+                let _ = sender.send(AudioChunk {
+                    data,
+                    sample_rate: self.sample_rate,
+                    timestamp,
+                    chunk_id: self.chunk_id_counter,
+                    device_type,
+                });
+            }
+        }
     }
 
     fn flush_remaining_audio(&mut self) -> Result<()> {
@@ -1250,6 +1279,7 @@ impl AudioPipelineManager {
         target_chunk_duration_ms: u32,
         sample_rate: u32,
         recording_sender: Option<mpsc::UnboundedSender<AudioChunk>>,
+        track_sender: Option<mpsc::UnboundedSender<AudioChunk>>,
         mic_device_name: String,
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
@@ -1281,6 +1311,7 @@ impl AudioPipelineManager {
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio
         // This ensures both mic AND system audio are captured in recordings
         pipeline.recording_sender_for_mixed = recording_sender;
+        pipeline.track_sender = track_sender;
 
         let handle = tokio::spawn(async move {
             pipeline.run().await
@@ -1410,5 +1441,15 @@ mod policy_tests {
         // uninterrupted speech. Batch import/retranscription use 2000ms.
         // See #679 and #756.
         assert_eq!(VAD_REDEMPTION_TIME_MS, 500);
+    }
+
+    #[test]
+    fn track_windows_are_padded_to_the_mixed_length() {
+        let (mic, system) = aligned_track_windows(&[0.1, 0.2, 0.3], &[0.5]);
+        assert_eq!(mic, vec![0.1, 0.2, 0.3]);
+        assert_eq!(system, vec![0.5, 0.0, 0.0]);
+
+        let mixed = ProfessionalAudioMixer::new(48000).mix_window(&[0.1, 0.2, 0.3], &[0.5]);
+        assert_eq!(mixed.len(), mic.len());
     }
 }

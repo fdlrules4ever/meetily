@@ -6,6 +6,7 @@
 // notification. Jobs run in the background, one meeting at a time.
 
 use crate::audio::retranscription::{is_retranscription_in_progress, start_retranscription};
+use crate::audio::speaker_tracks;
 use crate::database::repositories::{
     meeting::MeetingsRepository, setting::SettingsRepository, summary::SummaryProcessesRepository,
 };
@@ -266,8 +267,8 @@ async fn summarize<R: Runtime>(
         }
     }
 
-    let segments: Vec<(String, Option<f64>, String)> = sqlx::query_as(
-        "SELECT transcript, audio_start_time, timestamp FROM transcripts
+    let segments: Vec<(String, Option<f64>, String, Option<String>)> = sqlx::query_as(
+        "SELECT transcript, audio_start_time, timestamp, speaker FROM transcripts
          WHERE meeting_id = ? ORDER BY audio_start_time ASC",
     )
     .bind(meeting_id)
@@ -279,7 +280,7 @@ async fn summarize<R: Runtime>(
     }
 
     let text = format_transcript_for_summary(&segments);
-    let texts: Vec<String> = segments.iter().map(|(t, _, _)| t.clone()).collect();
+    let texts: Vec<String> = segments.iter().map(|(t, _, _, _)| t.clone()).collect();
     let summary_language = resolve_summary_language(Path::new(folder_path), &texts);
 
     let (started_at, cancellation_token) = begin_summary_process(
@@ -334,11 +335,12 @@ async fn summarize<R: Runtime>(
     }
 }
 
-/// "[mm:ss] text" lines, the format the meeting page sends for summaries.
-fn format_transcript_for_summary(segments: &[(String, Option<f64>, String)]) -> String {
+/// "[mm:ss] text" lines, the format the meeting page sends for summaries, with
+/// "Me:" / "Others:" before the text when the speaker side is known.
+fn format_transcript_for_summary(segments: &[(String, Option<f64>, String, Option<String>)]) -> String {
     segments
         .iter()
-        .map(|(text, start, timestamp)| {
+        .map(|(text, start, timestamp, speaker)| {
             let time = match start {
                 Some(seconds) => {
                     let total = seconds.max(0.0).floor() as u64;
@@ -346,7 +348,10 @@ fn format_transcript_for_summary(segments: &[(String, Option<f64>, String)]) -> 
                 }
                 None => timestamp.clone(),
             };
-            format!("{} {}", time, text)
+            match speaker_tracks::summary_label(speaker.as_deref()) {
+                Some(label) => format!("{} {}: {}", time, label, text),
+                None => format!("{} {}", time, text),
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -432,13 +437,25 @@ mod tests {
     #[test]
     fn formats_transcript_with_minute_second_prefixes() {
         let segments = vec![
-            ("Hello".to_string(), Some(5.9), "10:00".to_string()),
-            ("Later".to_string(), Some(125.0), "10:02".to_string()),
-            ("No offset".to_string(), None, "[10:03]".to_string()),
+            ("Hello".to_string(), Some(5.9), "10:00".to_string(), None),
+            ("Later".to_string(), Some(125.0), "10:02".to_string(), None),
+            ("No offset".to_string(), None, "[10:03]".to_string(), None),
         ];
         assert_eq!(
             format_transcript_for_summary(&segments),
             "[00:05] Hello\n[02:05] Later\n[10:03] No offset"
+        );
+    }
+
+    #[test]
+    fn labels_speaker_sides_for_the_summary() {
+        let segments = vec![
+            ("And one is not responding.".to_string(), Some(12.0), "10:00".to_string(), Some("mic".to_string())),
+            ("I had to connect my headphones.".to_string(), Some(14.0), "10:00".to_string(), Some("system".to_string())),
+        ];
+        assert_eq!(
+            format_transcript_for_summary(&segments),
+            "[00:12] Me: And one is not responding.\n[00:14] Others: I had to connect my headphones."
         );
     }
 

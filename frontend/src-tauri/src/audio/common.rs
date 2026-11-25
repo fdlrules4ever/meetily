@@ -1,4 +1,5 @@
 use crate::api::TranscriptSegment;
+use crate::audio::speaker_tracks::LabeledTranscript;
 use anyhow::Result;
 use log::{debug, info};
 use once_cell::sync::Lazy;
@@ -49,20 +50,35 @@ pub(crate) async fn unload_engine_after_batch(use_parakeet: bool) {
 /// Create transcript segments from transcription results.
 /// Each tuple is (text, start_ms, end_ms) from VAD timestamps.
 pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> Vec<TranscriptSegment> {
+    let unlabeled: Vec<LabeledTranscript> = transcripts
+        .iter()
+        .map(|(text, start_ms, end_ms)| LabeledTranscript {
+            text: text.clone(),
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            speaker: None,
+        })
+        .collect();
+    create_labeled_transcript_segments(&unlabeled)
+}
+
+/// Create transcript segments, keeping the speaker side ("mic" / "system") if known.
+pub(crate) fn create_labeled_transcript_segments(transcripts: &[LabeledTranscript]) -> Vec<TranscriptSegment> {
     transcripts
         .iter()
-        .map(|(text, start_ms, end_ms)| {
-            let start_seconds = start_ms / 1000.0;
-            let end_seconds = end_ms / 1000.0;
+        .map(|t| {
+            let start_seconds = t.start_ms / 1000.0;
+            let end_seconds = t.end_ms / 1000.0;
             let duration = end_seconds - start_seconds;
 
             TranscriptSegment {
                 id: format!("transcript-{}", Uuid::new_v4()),
-                text: text.trim().to_string(),
+                text: t.text.trim().to_string(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 audio_start_time: Some(start_seconds),
                 audio_end_time: Some(end_seconds),
                 duration: Some(duration),
+                speaker: t.speaker.map(|s| s.db_value().to_string()),
             }
         })
         .collect()
@@ -85,6 +101,7 @@ pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegmen
                 "audio_start_time": s.audio_start_time,
                 "audio_end_time": s.audio_end_time,
                 "duration": s.duration,
+                "speaker": s.speaker,
                 "sequence_id": i
             })
         }).collect::<Vec<_>>()
