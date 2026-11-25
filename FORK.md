@@ -21,6 +21,10 @@ Fork of [Zackriya-Solutions/meetily](https://github.com/Zackriya-Solutions/meeti
   (`summary/templates/loader.rs`, `summary/instructions.rs`, `components/SummaryPromptSettings.tsx`).
 - **Updates:** no automatic update check at startup and no updater artifacts. Upstream updates would
   replace this build. Check manually from About if needed.
+- **Whisper thread count:** upstream computes a thread count per machine but never passes it to
+  whisper.cpp, which then uses its default of 4. `whisper_engine.rs` now calls `set_n_threads`.
+- **Welcome screen:** says the transcript is made after recording, and why (only while "Transcribe After
+  Recording" is on).
 
 ## Building on Windows (verified 2026-11-21)
 
@@ -55,7 +59,21 @@ Prerequisites: VS 2022 Build Tools with the C++ workload, CMake, rustup, Node 22
    pnpm run tauri:build
    ```
    Output: `target\release\bundle\msi\*.msi` and `target\release\bundle\nsis\*-setup.exe`.
+6. **GPU (Vulkan), same as upstream's Windows release.** Without it Whisper runs on the CPU only, which
+   is far too slow for large models. `scripts/auto-detect-gpu.js` picks CPU when it sees an NVIDIA GPU
+   without the CUDA toolkit, so force the feature. Vulkan SDK 1.4.309.0 (upstream's CI pin) installs
+   without admin rights and without system changes:
+   ```powershell
+   .\VulkanSDK-1.4.309.0-Installer.exe --root "$PWD\.toolchain\vulkan-sdk\1.4.309.0" --accept-licenses --default-answer --confirm-command install copy_only=1
+   ```
+   Then, before step 5's build:
+   ```powershell
+   $env:VULKAN_SDK = "$PWD\.toolchain\vulkan-sdk\1.4.309.0"
+   $env:PATH = "$env:VULKAN_SDK\Bin;$env:PATH"
+   $env:TAURI_GPU_FEATURE = "vulkan"
+   ```
+   The app uses the system's `vulkan-1.dll` (installed with any current GPU driver).
 
-Notes: builds are CPU-only unless a GPU SDK is installed (see `docs/GPU_ACCELERATION.md`). Installers are
+Notes: Installers are
 unsigned (SmartScreen warns). The app identifier is unchanged (`com.meetily.ai`), so it installs over
 official Meetily and keeps its meetings, models and settings.

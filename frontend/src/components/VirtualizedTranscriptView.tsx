@@ -267,7 +267,17 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                     ) : (
                         <>
                             <p className="text-lg font-semibold">Welcome to meetily!</p>
-                            <p className="text-xs mt-1">Start recording to see live transcription</p>
+                            {transcribeAfterRecording ? (
+                                <>
+                                    <p className="text-xs mt-1">Start recording. The transcript and summary are generated after you stop.</p>
+                                    <p className="text-xs mt-3 text-gray-400 max-w-sm mx-auto">
+                                        This is a modified version of Meetily that deliberately skips live transcription:
+                                        transcribing the complete recording afterwards gives more accurate results.
+                                    </p>
+                                </>
+                            ) : (
+                                <p className="text-xs mt-1">Start recording to see live transcription</p>
+                            )}
                         </>
                     )}
                 </motion.div>
