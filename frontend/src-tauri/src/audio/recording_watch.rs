@@ -1,13 +1,14 @@
-//! "Still recording?" reminder.
+//! Watches a running recording, every few seconds:
 //!
-//! The recording pipeline already runs VAD over the mixed microphone + call audio, and calls
-//! [`mark_speech`] for every window in which it hears speech. A watcher started with each
-//! recording checks every few seconds how long it has been quiet on both sides and shows a
-//! notification once that reaches the minutes set in Recording Settings, then again every
-//! [`REPEAT_EVERY`] while it stays quiet. Speech resets it; paused time does not count.
-//! Because it listens for speech rather than loudness, keyboard or fan noise does not reset it.
-//!
-//! The same loop keeps the tray tooltip's recording duration current.
+//! - "Still recording?" reminder. The recording pipeline already runs VAD over the mixed
+//!   microphone + call audio, and calls [`mark_speech`] for every window in which it hears
+//!   speech. Once it has been quiet on both sides for the minutes set in Recording Settings, a
+//!   notification is shown, then again every [`REPEAT_EVERY`] while it stays quiet. Speech
+//!   resets it; paused time does not count. Because it listens for speech rather than
+//!   loudness, keyboard or fan noise does not reset it.
+//! - Stop when the call ends (Windows): when the call app releases the microphone and it is
+//!   quiet, the recording is stopped like the tray's Stop does. See `call_detection`.
+//! - The tray tooltip's recording time.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -16,6 +17,7 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use tauri::{AppHandle, Runtime};
 
+use crate::audio::call_detection::{other_apps_using_microphone, CallEndTracker};
 use crate::notifications::types::{Notification, NotificationType};
 
 const CHECK_EVERY: Duration = Duration::from_secs(5);
@@ -99,6 +101,14 @@ fn reminder_notification(silent_for: Duration) -> Notification {
     )
 }
 
+fn call_ended_notification() -> Notification {
+    Notification::new(
+        "Recording stopped",
+        "Meetily stopped the recording because the call ended. You can turn this off in Recording Settings.",
+        NotificationType::CallEndedStop,
+    )
+}
+
 /// Starts the watcher for a recording that has just started. Replaces any earlier watcher.
 pub fn start<R: Runtime>(app: &AppHandle<R>) {
     let generation = WATCH_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
@@ -107,21 +117,27 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // Read once per recording; a change applies from the next recording.
-        let minutes = match crate::audio::recording_preferences::load_recording_preferences(&app).await {
-            Ok(prefs) => prefs.silence_reminder_minutes,
+        let prefs = match crate::audio::recording_preferences::load_recording_preferences(&app).await {
+            Ok(prefs) => prefs,
             Err(e) => {
-                warn!("Silence reminder: could not load recording preferences, using the default: {}", e);
-                crate::audio::recording_preferences::RecordingPreferences::default().silence_reminder_minutes
+                warn!("Recording watch: could not load recording preferences, using the defaults: {}", e);
+                crate::audio::recording_preferences::RecordingPreferences::default()
             }
         };
+        let minutes = prefs.silence_reminder_minutes;
         let mut schedule = (minutes > 0)
             .then(|| ReminderSchedule::new(Duration::from_secs(u64::from(minutes) * 60), REPEAT_EVERY));
+        let mut call_tracker =
+            (prefs.stop_when_call_ends && cfg!(target_os = "windows")).then(CallEndTracker::default);
         info!(
-            "Recording watch started; silence reminder after {}",
-            if minutes > 0 { format!("{} min", minutes) } else { "never (off)".to_string() }
+            "Recording watch started; silence reminder after {}; stop when the call ends: {}",
+            if minutes > 0 { format!("{} min", minutes) } else { "never (off)".to_string() },
+            call_tracker.is_some()
         );
 
         let mut was_paused = false;
+        let mut last_apps: Option<Vec<String>> = None;
+        let mut detection_failed = false;
         loop {
             tokio::time::sleep(CHECK_EVERY).await;
             if WATCH_GENERATION.load(Ordering::SeqCst) != generation {
@@ -157,6 +173,39 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) {
                 if schedule.due(silent_for) {
                     info!("Silence reminder: no speech for {} s", silent_for.as_secs());
                     crate::audio::post_recording::notify(&app, reminder_notification(silent_for)).await;
+                }
+            }
+
+            if let Some(tracker) = call_tracker.as_mut() {
+                let apps = tokio::task::spawn_blocking(other_apps_using_microphone)
+                    .await
+                    .ok()
+                    .flatten();
+                let Some(apps) = apps else {
+                    if !detection_failed {
+                        warn!("Call detection unavailable for now; not stopping when the call ends");
+                        detection_failed = true;
+                    }
+                    continue;
+                };
+                detection_failed = false;
+                if last_apps.as_ref() != Some(&apps) {
+                    // Program names only, for diagnosing which app holds the microphone.
+                    info!("Call detection: other apps using a microphone: {:?}", apps);
+                    last_apps = Some(apps.clone());
+                }
+                let now = Duration::from_millis(now_ms());
+                if let Some(change) = tracker.observe(now, !apps.is_empty()) {
+                    info!("Call detection: {:?}", change);
+                }
+                if tracker.should_stop(now, silence()) {
+                    info!(
+                        "Stopping the recording: the call ended and there was no speech for {} s",
+                        silence().as_secs()
+                    );
+                    crate::tray::stop_recording_in_background(&app);
+                    crate::audio::post_recording::notify(&app, call_ended_notification()).await;
+                    return;
                 }
             }
         }

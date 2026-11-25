@@ -153,10 +153,16 @@ fn resume_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
+    focus_main_window(app);
+    stop_recording_in_background(app);
+}
+
+/// Stops the recording the same way the tray does (save, then the frontend's post-processing
+/// via `recording-stop-complete`), without bringing the window forward.
+pub(crate) fn stop_recording_in_background<R: Runtime>(app: &AppHandle<R>) {
     // Immediately show stopping state
     set_tray_state(app, RecordingState::Stopping);
 
-    focus_main_window(app);
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         log::info!("Tray: Stopping recording...");

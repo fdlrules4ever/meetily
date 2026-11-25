@@ -52,8 +52,10 @@ pub mod post_recording;
 // Separate mic/system tracks for "Me" / "Others" transcript labels
 pub mod speaker_tracks;
 
-// "Still recording?" notification after a stretch without speech
-pub mod silence_reminder;
+// While recording: "still recording?" notification after a stretch without speech,
+// tray tooltip timer, and stopping when the call ends
+pub mod recording_watch;
+pub mod call_detection;
 
 // Import module (import external audio files as new meetings)
 pub mod import;

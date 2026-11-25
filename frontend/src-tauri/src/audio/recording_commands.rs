@@ -674,8 +674,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Update tray menu to reflect recording state
     crate::tray::update_tray_menu(&app);
-    // Tray tooltip timer + "still recording?" notification after a quiet stretch
-    super::silence_reminder::start(&app);
+    // Tray tooltip timer, "still recording?" notification, stop when the call ends
+    super::recording_watch::start(&app);
 
     info!("✅ Recording started successfully with async-first approach");
 
@@ -881,8 +881,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Update tray menu to reflect recording state
     crate::tray::update_tray_menu(&app);
-    // Tray tooltip timer + "still recording?" notification after a quiet stretch
-    super::silence_reminder::start(&app);
+    // Tray tooltip timer, "still recording?" notification, stop when the call ends
+    super::recording_watch::start(&app);
 
     info!("✅ Recording started with custom devices using async-first approach");
 

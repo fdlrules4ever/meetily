@@ -21,6 +21,8 @@ export interface RecordingPreferences {
   transcribe_after_recording: boolean;
   /** Notify when nobody has spoken for this many minutes while recording; 0 = off. */
   silence_reminder_minutes: number;
+  /** Stop when the call app releases the microphone and it is quiet (Windows only). */
+  stop_when_call_ends: boolean;
 }
 
 const SILENCE_REMINDER_OPTIONS = [
@@ -46,7 +48,8 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     preferred_mic_device: null,
     preferred_system_device: null,
     transcribe_after_recording: true,
-    silence_reminder_minutes: 1
+    silence_reminder_minutes: 1,
+    stop_when_call_ends: true
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -115,6 +118,15 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
   const handleSilenceReminderChange = async (value: string) => {
     const newPreferences = { ...preferences, silence_reminder_minutes: Number(value) };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences);
+    if (isRecording) {
+      toast.info('Applies from your next recording');
+    }
+  };
+
+  const handleStopWhenCallEndsToggle = async (enabled: boolean) => {
+    const newPreferences = { ...preferences, stop_when_call_ends: enabled };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
     if (isRecording) {
@@ -261,6 +273,23 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      {/* Stop when the call ends */}
+      <div className="flex items-center justify-between p-4 border rounded-lg">
+        <div className="flex-1 pr-4">
+          <div className="font-medium">Stop When the Call Ends</div>
+          <div className="text-sm text-gray-600">
+            When the call app (Teams, Zoom, a browser) releases the microphone, stop the recording once nobody has
+            spoken for a minute, at the latest 10 minutes after the call. Rejoining keeps it going. Windows only for
+            now.
+          </div>
+        </div>
+        <Switch
+          checked={preferences.stop_when_call_ends ?? true}
+          onCheckedChange={handleStopWhenCallEndsToggle}
+          disabled={saving}
+        />
       </div>
 
       {/* Auto Save Toggle */}

@@ -21,8 +21,10 @@ pub enum NotificationType {
     RecordingResumed,
     TranscriptionComplete,
     MeetingReminder(u64), // Duration in minutes
-    /// No speech for a while during a recording (see `audio::silence_reminder`).
+    /// No speech for a while during a recording (see `audio::recording_watch`).
     SilenceReminder,
+    /// The recording was stopped because the call ended (see `audio::recording_watch`).
+    CallEndedStop,
     SystemError(String),
     Test, // For testing notifications
 }
@@ -37,6 +39,7 @@ impl NotificationType {
             Self::TranscriptionComplete => "transcription_complete",
             Self::MeetingReminder(_) => "meeting_reminder",
             Self::SilenceReminder => "silence_reminder",
+            Self::CallEndedStop => "call_ended_stop",
             Self::SystemError(_) => "system_error",
             Self::Test => "test",
         }

@@ -185,6 +185,9 @@ whisper-rs = { version = "0.13.2", features = ["raw-api", "metal", "coreml"] }
 #   --features openblas (OpenBLAS optimization, requires BLAS_INCLUDE_DIRS)
 [target.'cfg(target_os = "windows")'.dependencies]
 whisper-rs = { version = "0.13.2", features = ["raw-api"] }
+# Audio sessions per process (call detection). Same version and a subset of the features
+# cpal already uses, so this adds no new code to the build.
+windows = { version = "0.54.0", features = ["Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com"] }
 ort = { version = "2.0.0-rc.10", features = ["load-dynamic"] }
 futures-channel = "0.3.31"
 

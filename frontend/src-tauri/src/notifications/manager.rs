@@ -309,6 +309,8 @@ impl<R: Runtime> NotificationManager<R> {
             NotificationType::MeetingReminder(_) => settings.notification_preferences.show_meeting_reminders,
             // Switched on/off with Recording Settings -> silence reminder.
             NotificationType::SilenceReminder => true,
+            // Switched on/off with Recording Settings -> stop when the call ends.
+            NotificationType::CallEndedStop => true,
             NotificationType::SystemError(_) => settings.notification_preferences.show_system_errors,
             NotificationType::Test => true, // Always show test notifications
         }

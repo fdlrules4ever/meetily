@@ -35,7 +35,15 @@ Fork of [Zackriya-Solutions/meetily](https://github.com/Zackriya-Solutions/meeti
   options off to 30 minutes). The pipeline's VAD on the mixed microphone + call audio marks every moment it
   hears speech; a watcher started with each recording shows a notification once nobody has spoken for that long,
   then every 10 minutes while it stays quiet. Speech (not loudness) resets it; paused time doesn't count. The
-  setting is read when a recording starts. `audio/silence_reminder.rs`, hook in `pipeline.rs` (`mark_speech`).
+  setting is read when a recording starts. `audio/recording_watch.rs`, hook in `pipeline.rs` (`mark_speech`).
+- **Stop when the call ends (Windows).** Recording Settings → "Stop When the Call Ends" (on by default). Call
+  apps (Teams, Zoom, a browser with Meet) hold the microphone for the whole call, also while muted, and release
+  it when the call ends. Every 5 s the recording watch lists the other programs with an active capture session
+  on any microphone (WASAPI audio sessions, Meetily itself excluded). After a call of at least 2 minutes is over,
+  the recording stops once nobody has spoken for a minute, at the latest 10 minutes after the call; rejoining
+  cancels it. It stops like the tray's Stop (saved, transcribed, summarized) and shows a notification. Logs list
+  the program names holding the microphone. Apps that keep the microphone open all the time (e.g. noise
+  suppression tools) prevent the stop. `audio/call_detection.rs`, `audio/recording_watch.rs`.
 - **Recording indicator.** While recording: red dot on the tray icon (orange when paused) with the recording
   time in its tooltip, red dot on the taskbar button (Windows overlay icon) and a Dock badge (macOS, untested).
   The tray icon matters most, because closing the window hides it to the tray. `recording_indicator.rs`, applied

@@ -36,9 +36,13 @@ pub struct RecordingPreferences {
     #[serde(default = "default_transcribe_after_recording")]
     pub transcribe_after_recording: bool,
     /// Notify when no speech was detected for this many minutes while recording
-    /// (0 = off). See `audio::silence_reminder`.
+    /// (0 = off). See `audio::recording_watch`.
     #[serde(default = "default_silence_reminder_minutes")]
     pub silence_reminder_minutes: u32,
+    /// Stop the recording when the call app releases the microphone and it is quiet
+    /// (Windows only). See `audio::recording_watch`.
+    #[serde(default = "default_stop_when_call_ends")]
+    pub stop_when_call_ends: bool,
 }
 
 fn default_transcribe_after_recording() -> bool {
@@ -47,6 +51,10 @@ fn default_transcribe_after_recording() -> bool {
 
 fn default_silence_reminder_minutes() -> u32 {
     1
+}
+
+fn default_stop_when_call_ends() -> bool {
+    true
 }
 
 impl RecordingPreferences {
@@ -71,6 +79,7 @@ impl Default for RecordingPreferences {
             system_audio_backend: Some("coreaudio".to_string()),
             transcribe_after_recording: default_transcribe_after_recording(),
             silence_reminder_minutes: default_silence_reminder_minutes(),
+            stop_when_call_ends: default_stop_when_call_ends(),
         }
     }
 }

@@ -1182,7 +1182,7 @@ impl AudioPipeline {
         }
         // Speech on either side (mic or call) resets the silence reminder.
         if heard_speech || self.vad_processor.is_in_speech() {
-            super::silence_reminder::mark_speech();
+            super::recording_watch::mark_speech();
         }
 
         // STEP 4: Send mixed audio for recording (WAV file)
